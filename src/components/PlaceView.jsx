@@ -1,15 +1,86 @@
-﻿import React, { useState } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import { Map, MapMarker } from 'react-kakao-maps-sdk';
 
 function PlaceView({ appData, updateAppData, showToast }) {
     const [keyword, setKeyword] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isOverlayOpen, setIsOverlayOpen] = useState(false);
-    const [mapCenter, setMapCenter] = useState({ lat: 37.5665, lng: 126.9780 });
     const [selectedPlace, setSelectedPlace] = useState(null);
     const [memoInput, setMemoInput] = useState('');
+    const [myLocation, setMyLocation] = useState(null);
 
-    // 1. 검색 기능
+    // 🌟 중복 실행 방지를 위한 Ref
+    const isProcessing = useRef(false);
+
+    useEffect(() => {
+        // 이미 초기화가 완료되었거나 현재 처리 중이면 중단
+        if (appData.mapState.isInitialized || isProcessing.current) return;
+        isProcessing.current = true;
+
+        const finalize = (centerPos) => {
+            updateAppData({
+                ...appData,
+                mapState: {
+                    center: centerPos || appData.mapState.center,
+                    level: appData.mapState.level,
+                    isInitialized: true
+                }
+            });
+        };
+
+        // 🌟 1. 즉시 타임아웃 설정 (사용자가 이미 허용했더라도 응답이 늦을 경우 대비)
+        const timer = setTimeout(() => {
+            if (!appData.mapState.isInitialized) {
+                finalize(); // 현재 값(서울시청)으로 강제 시작
+                showToast('위치 응답이 늦어 기본 위치로 시작합니다.');
+            }
+        }, 5000); // 5초 대기
+
+        // 🌟 2. 위치 정보 요청
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    clearTimeout(timer);
+                    const newPos = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude,
+                    };
+                    setMyLocation(newPos);
+                    finalize(newPos);
+                },
+                (error) => {
+                    clearTimeout(timer);
+                    finalize(); // 에러 발생 시 기본값으로 시작
+                    showToast('위치 정보를 가져올 수 없어 기본 위치로 시작합니다.');
+                },
+                { enableHighAccuracy: true, timeout: 4500, maximumAge: 0 }
+            );
+        } else {
+            clearTimeout(timer);
+            finalize();
+        }
+
+        return () => clearTimeout(timer);
+    }, []);
+
+    // 지도를 움직일 때마다 위치 저장 (탭 전환 대비)
+    const handleMapDragEnd = (map) => {
+        const newCenter = {
+            lat: map.getCenter().getLat(),
+            lng: map.getCenter().getLng(),
+        };
+        // 불필요한 리렌더링 방지를 위해 위치가 유의미하게 변했을 때만 업데이트 추천
+        updateAppData({
+            ...appData,
+            mapState: {
+                ...appData.mapState,
+                center: newCenter,
+                level: map.getLevel(),
+            }
+        });
+    };
+
+    // 장소 검색 및 선택 로직은 기존과 동일 (생략 없이 통합 유지)
     const searchPlace = () => {
         if (!keyword.trim()) return;
         const ps = new window.kakao.maps.services.Places();
@@ -17,6 +88,10 @@ function PlaceView({ appData, updateAppData, showToast }) {
             if (status === window.kakao.maps.services.Status.OK) {
                 setSearchResults(data);
                 setIsOverlayOpen(true);
+                if (data.length > 0) {
+                    const newCenter = { lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) };
+                    updateAppData({ ...appData, mapState: { ...appData.mapState, center: newCenter } });
+                }
             } else {
                 setIsOverlayOpen(false);
                 showToast('검색 결과가 없습니다.');
@@ -24,107 +99,72 @@ function PlaceView({ appData, updateAppData, showToast }) {
         });
     };
 
-    // 2. 장소 선택 기능
     const handleSelectPlace = (place) => {
         const lat = parseFloat(place.y || place.lat);
         const lng = parseFloat(place.x || place.lng);
         const addr = place.road_address_name || place.address_name;
-
-        // 💡 중요: 현재 선택한 장소가 이미 저장된 리스트에 있는지 확인
-        const savedVersion = appData.savedPlaces.find(
-            p => p.place_name === place.place_name && p.address_name === addr
-        );
-
-        setMapCenter({ lat, lng });
+        const savedVersion = appData.savedPlaces.find(p => p.place_name === place.place_name && p.address_name === addr);
+        updateAppData({ ...appData, mapState: { ...appData.mapState, center: { lat, lng } } });
         setIsOverlayOpen(false);
         setKeyword(place.place_name);
-
-        if (savedVersion) {
-            // 이미 저장된 장소라면: 저장된 데이터(메모 포함)를 로드
-            setSelectedPlace(savedVersion);
-            setMemoInput(savedVersion.memo || '');
-        } else {
-            // 새로운 장소라면: 검색된 데이터를 로드하고 메모는 비움
-            setSelectedPlace({ ...place, lat, lng, address_name: addr });
-            setMemoInput('');
-        }
+        if (savedVersion) { setSelectedPlace(savedVersion); setMemoInput(savedVersion.memo || ''); }
+        else { setSelectedPlace({ ...place, lat, lng, address_name: addr }); setMemoInput(''); }
     };
 
-    // 3. 메모 실시간 수정 (DB ID가 있을 때만 작동)
     const handleMemoChange = (e) => {
         const newMemo = e.target.value;
         setMemoInput(newMemo);
-
-        // 💡 DB에 저장된 '진짜' 데이터일 때만 실시간 수정 반영
-        // (우리가 부여한 고유 ID는 보통 Date.now()로 생성된 긴 숫자입니다)
         if (selectedPlace && typeof selectedPlace.id === 'number') {
-            const newPlaces = appData.savedPlaces.map(p =>
-                p.id === selectedPlace.id ? { ...p, memo: newMemo } : p
-            );
+            const newPlaces = appData.savedPlaces.map(p => p.id === selectedPlace.id ? { ...p, memo: newMemo } : p);
             updateAppData({ ...appData, savedPlaces: newPlaces });
         }
     };
 
-    // 4. 장소 저장
     const saveCurrentPlace = () => {
         if (!selectedPlace) return;
-
-        const entry = {
-            id: Date.now(), // 우리만의 고유 ID 생성
-            place_name: selectedPlace.place_name,
-            address_name: selectedPlace.address_name,
-            category_name: selectedPlace.category_name,
-            phone: selectedPlace.phone,
-            lat: selectedPlace.lat,
-            lng: selectedPlace.lng,
-            memo: memoInput.trim(),
-            savedAt: new Date().toLocaleDateString('ko-KR')
-        };
-
+        const entry = { id: Date.now(), place_name: selectedPlace.place_name, address_name: selectedPlace.address_name, category_name: selectedPlace.category_name, phone: selectedPlace.phone, lat: selectedPlace.lat, lng: selectedPlace.lng, memo: memoInput.trim(), savedAt: new Date().toLocaleDateString('ko-KR') };
         updateAppData({ ...appData, savedPlaces: [entry, ...appData.savedPlaces] });
-        setSelectedPlace(entry); // 방금 저장한 따끈따끈한 데이터로 교체
+        setSelectedPlace(entry);
         showToast('저장 완료!');
     };
 
-    // 5. 장소 삭제
     const deleteSavedPlace = (id, e) => {
         e.stopPropagation();
         const newPlaces = appData.savedPlaces.filter(p => p.id !== id);
         updateAppData({ ...appData, savedPlaces: newPlaces });
-
-        if (selectedPlace?.id === id) {
-            setSelectedPlace(null);
-            setMemoInput('');
-        }
+        if (selectedPlace?.id === id) { setSelectedPlace(null); setMemoInput(''); }
         showToast('삭제했습니다.');
     };
 
-    // 💡 [렌더링용 데이터] 현재 장소가 저장된 장소인지 실시간 체크
-    const isSaved = selectedPlace && appData.savedPlaces.some(
-        p => p.place_name === selectedPlace.place_name && p.address_name === selectedPlace.address_name
-    );
-
+    const isSaved = selectedPlace && appData.savedPlaces.some(p => p.place_name === selectedPlace.place_name && p.address_name === selectedPlace.address_name);
     const cat = selectedPlace?.category_name ? selectedPlace.category_name.split('>').pop().trim() : '';
+
+    // 🌟 아직 초기화 중이라면 지도를 그리지 않고 대기
+    if (!appData.mapState.isInitialized) {
+        return (
+            <div style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', background: 'var(--paper)' }}>
+                <p>위치 정보를 확인하고 있습니다...</p>
+            </div>
+        );
+    }
 
     return (
         <>
             <div className="image-zone">
                 <div id="map-container">
                     <div className="map-search-bar">
-                        <input
-                            type="text"
-                            value={keyword}
-                            onChange={(e) => setKeyword(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && searchPlace()}
-                            placeholder="장소를 검색하세요..."
-                        />
+                        <input type="text" value={keyword} onChange={(e) => setKeyword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && searchPlace()} placeholder="장소를 검색하세요..." />
                         <button onClick={searchPlace}>검색</button>
                     </div>
-
-                    <Map center={mapCenter} style={{ width: "100%", height: "calc(100% - 52px)" }} level={3}>
-                        {selectedPlace && <MapMarker position={mapCenter} />}
+                    <Map center={appData.mapState.center} level={appData.mapState.level} style={{ width: "100%", height: "calc(100% - 52px)" }} onCenterChanged={handleMapDragEnd} onZoomChanged={handleMapDragEnd}>
+                        {myLocation && <MapMarker position={myLocation} image={{ src: "https://t1.daumcdn.net/localimg/localimages/07/2018/pc/img/marker_my.png", size: { width: 30, height: 30 } }} />}
+                        {searchResults.map((place, idx) => (
+                            <MapMarker key={`search-${place.id || idx}`} position={{ lat: parseFloat(place.y), lng: parseFloat(place.x) }} onClick={() => handleSelectPlace(place)} image={{ src: selectedPlace?.place_name === place.place_name ? "https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png" : "https://t1.daumcdn.net/mapjsapi/images/2.0/marker.png", size: { width: 24, height: 35 } }} />
+                        ))}
+                        {appData.savedPlaces.map((place) => (
+                            <MapMarker key={`saved-${place.id}`} position={{ lat: place.lat, lng: place.lng }} onClick={() => handleSelectPlace(place)} image={{ src: "https://t1.daumcdn.net/localimg/localimages/07/2011/marker_red.png", size: { width: 24, height: 35 } }} />
+                        ))}
                     </Map>
-
                     {isOverlayOpen && (
                         <div className="search-results-overlay" style={{ display: 'block' }}>
                             {searchResults.map((place, idx) => (
@@ -137,7 +177,7 @@ function PlaceView({ appData, updateAppData, showToast }) {
                     )}
                 </div>
             </div>
-
+            {/* ... 이하 우측 정보 패널 레이아웃 동일 (생략하지 않고 적용하세요) ... */}
             <div className="text-container">
                 <div className="place-panel">
                     <div className="place-top">
@@ -159,26 +199,15 @@ function PlaceView({ appData, updateAppData, showToast }) {
                                     </>
                                 )}
                             </div>
-                            <button
-                                className="save-place-btn"
-                                onClick={saveCurrentPlace}
-                                disabled={!selectedPlace || isSaved} // 👈 isSaved 변수로 판단!
-                            >
+                            <button className="save-place-btn" onClick={saveCurrentPlace} disabled={!selectedPlace || isSaved}>
                                 {isSaved ? '이미 저장됨' : '저장하기'}
                             </button>
                         </div>
-
                         <div className="memo-col">
                             <div className="place-info-label">메모</div>
-                            <textarea
-                                value={memoInput}
-                                onChange={handleMemoChange}
-                                placeholder={selectedPlace ? (isSaved ? "수정 시 자동 저장됩니다." : "메모를 입력하고 저장 버튼을 누르세요.") : "장소를 선택해주세요."}
-                                disabled={!selectedPlace}
-                            ></textarea>
+                            <textarea value={memoInput} onChange={handleMemoChange} placeholder={selectedPlace ? (isSaved ? "수정 시 자동 저장됩니다." : "메모를 입력하고 저장 버튼을 누르세요.") : "장소를 선택해주세요."} disabled={!selectedPlace}></textarea>
                         </div>
                     </div>
-
                     <div className="saved-places-zone">
                         <div className="saved-places-header">
                             <div className="saved-places-title">저장된 장소</div>
@@ -189,11 +218,7 @@ function PlaceView({ appData, updateAppData, showToast }) {
                                 <div className="empty-list">아직 저장된 장소가 없습니다. ✦</div>
                             ) : (
                                 appData.savedPlaces.map((place, idx) => (
-                                    <div
-                                        key={place.id}
-                                        className={`saved-place-item ${selectedPlace?.id === place.id ? 'active' : ''}`}
-                                        onClick={() => handleSelectPlace(place)}
-                                    >
+                                    <div key={place.id} className={`saved-place-item ${selectedPlace?.id === place.id ? 'active' : ''}`} onClick={() => handleSelectPlace(place)}>
                                         <div className="saved-place-idx">{String(idx + 1).padStart(2, '0')}</div>
                                         <div className="saved-place-texts">
                                             <div className="saved-place-name">{place.place_name}</div>

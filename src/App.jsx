@@ -1,39 +1,48 @@
-import React, { useState, useEffect } from 'react';
-import { getDoc, setDoc } from 'firebase/firestore';
-import { userDocRef } from './firebase';
+import  {useState, useEffect} from 'react';
+import {getDoc, setDoc} from 'firebase/firestore';
+import {userDocRef} from './firebase';
 import PlaceView from './components/PlaceView';
 import MemoView from './components/MemoView';
 import './App.css';
 
 function App() {
     const [currentTab, setCurrentTab] = useState('place');
-    const [toast, setToast] = useState({ show: false, msg: '' });
+    const [toast, setToast] = useState({show: false, msg: ''});
     const [appData, setAppData] = useState({
         savedPlaces: [],
+        mapState: {center: {lat: 37.5665, lng: 126.9780}, level: 3, isInitialized: false},
         schedules: {},
         dayMemos: {},
         datePlaces: {}
     });
 
-    // 토스트 메시지 띄우기
     const showToast = (msg) => {
-        setToast({ show: true, msg });
-        setTimeout(() => setToast({ show: false, msg: '' }), 2000);
+        setToast({show: true, msg});
+        setTimeout(() => setToast({show: false, msg: ''}), 2000);
     };
 
-    // 파이어베이스에서 데이터 가져오기
+    // 🌟 수정된 부분: 파이어베이스에서 데이터를 가져올 때 mapState를 유지함
     useEffect(() => {
         const fetchData = async () => {
             try {
                 const snap = await getDoc(userDocRef);
                 if (snap.exists()) {
                     const data = snap.data();
-                    setAppData({
+                    setAppData(prev => ({
+                        ...prev, // 기존 초기값(특히 mapState)을 먼저 깔아줌
                         savedPlaces: data.savedPlaces || [],
                         schedules: data.schedules || {},
                         dayMemos: data.dayMemos || {},
-                        datePlaces: data.datePlaces || {}
-                    });
+                        datePlaces: data.datePlaces || {},
+                        // 만약 DB에도 mapState가 저장되어 있다면 그걸 쓰고, 없으면 기존 값을 유지
+                        mapState: data.mapState || prev.mapState
+                    }));
+                } else {
+                    // 데이터가 아예 없는 신규 유저라면 위치 권한 확인을 위해 초기화만 진행
+                    setAppData(prev => ({
+                        ...prev,
+                        mapState: { ...prev.mapState, isInitialized: false }
+                    }));
                 }
             } catch (error) {
                 console.error("데이터 불러오기 실패:", error);
@@ -43,7 +52,6 @@ function App() {
         fetchData();
     }, []);
 
-    // 데이터 업데이트 및 파이어베이스 동기화 함수
     const updateAppData = async (newData) => {
         setAppData(newData);
         try {
@@ -60,18 +68,20 @@ function App() {
                 <button
                     className={`tab-btn ${currentTab === 'place' ? 'active' : ''}`}
                     onClick={() => setCurrentTab('place')}
-                >장소</button>
+                >장소
+                </button>
                 <button
                     className={`tab-btn ${currentTab === 'memo' ? 'active' : ''}`}
                     onClick={() => setCurrentTab('memo')}
-                >메모</button>
+                >메모
+                </button>
             </div>
 
             <div className="body-container">
                 {currentTab === 'place' ? (
-                    <PlaceView appData={appData} updateAppData={updateAppData} showToast={showToast} />
+                    <PlaceView appData={appData} updateAppData={updateAppData} showToast={showToast}/>
                 ) : (
-                    <MemoView appData={appData} updateAppData={updateAppData} showToast={showToast} />
+                    <MemoView appData={appData} updateAppData={updateAppData} showToast={showToast}/>
                 )}
             </div>
 
