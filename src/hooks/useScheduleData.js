@@ -8,6 +8,15 @@ export function useScheduleData(showToast) {
     const [schedules, setSchedules] = useState({});
     const [dayMemos, setDayMemos] = useState({});
     const [datePlaces, setDatePlaces] = useState({});
+    
+    const [splitRatio, setSplitRatio] = useState(0.5);
+    const [placeTopRatio, setPlaceTopRatio] = useState(0.6);
+    const [placeVerticalRatio, setPlaceVerticalRatio] = useState(0.5);
+    const [memoVerticalRatio, setMemoVerticalRatio] = useState(0.7);
+    const [memoScheduleRatio, setMemoScheduleRatio] = useState(0.5);
+    const [placeSearchRatio, setPlaceSearchRatio] = useState(0.1);
+    const [memoDateRatio, setMemoDateRatio] = useState(0.15);
+
     const [mapInfo, setMapInfo] = useState({
         center: { lat: 37.5665, lng: 126.9780 },
         level: 3,
@@ -24,11 +33,15 @@ export function useScheduleData(showToast) {
                     setSchedules(data.schedules || {});
                     setDayMemos(data.dayMemos || {});
                     setDatePlaces(data.datePlaces || {});
-                    if (data.mapState) {
-                        setMapInfo({ ...data.mapState, isInitialized: true });
-                    } else {
-                        setMapInfo(prev => ({ ...prev, isInitialized: true }));
-                    }
+                    setSplitRatio(data.splitRatio || 0.5);
+                    setPlaceTopRatio(data.placeTopRatio || 0.6);
+                    setPlaceVerticalRatio(data.placeVerticalRatio || 0.5);
+                    setMemoVerticalRatio(data.memoVerticalRatio || 0.7);
+                    setMemoScheduleRatio(data.memoScheduleRatio || 0.5);
+                    setPlaceSearchRatio(data.placeSearchRatio || 0.1);
+                    setMemoDateRatio(data.memoDateRatio || 0.15);
+                    if (data.mapState) setMapInfo({ ...data.mapState, isInitialized: true });
+                    else setMapInfo(prev => ({ ...prev, isInitialized: true }));
                 } else {
                     setMapInfo(prev => ({ ...prev, isInitialized: true }));
                 }
@@ -42,72 +55,75 @@ export function useScheduleData(showToast) {
         fetchData();
     }, [showToast]);
 
-    // 🌟 1. 장소 추가/삭제 (arrayUnion, arrayRemove)
+    // 🌟 모든 업데이트 함수에 !isLoaded 가드 추가
     const addSavedPlace = async (place) => {
+        if (!isLoaded) return;
         setSavedPlaces(prev => [place, ...prev]);
-        await updateDoc(userDocRef, {
-            savedPlaces: arrayUnion(place)
-        });
+        await updateDoc(userDocRef, { savedPlaces: arrayUnion(place) });
     };
 
     const deleteSavedPlace = async (place) => {
+        if (!isLoaded) return;
         setSavedPlaces(prev => prev.filter(p => p.id !== place.id));
-        await updateDoc(userDocRef, {
-            savedPlaces: arrayRemove(place)
-        });
+        await updateDoc(userDocRef, { savedPlaces: arrayRemove(place) });
     };
 
-    // 장소 메모 수정 (배열 내 요소 수정은 Firestore 특성상 전체 업데이트가 불가피하여 덮어쓰기 유지)
     const updateSavedPlacesList = async (newList) => {
+        if (!isLoaded) return;
         setSavedPlaces(newList);
         await updateDoc(userDocRef, { savedPlaces: newList });
     };
 
-    // 🌟 2. 일정 추가/삭제 (Dot Notation + arrayUnion/Remove)
     const addSchedule = async (dateStr, schedule) => {
+        if (!isLoaded) return;
         setSchedules(prev => ({
             ...prev,
             [dateStr]: [...(prev[dateStr] || []), schedule].sort((a, b) => (a.time || '').localeCompare(b.time || ''))
         }));
-        await updateDoc(userDocRef, {
-            [`schedules.${dateStr}`]: arrayUnion(schedule)
-        });
+        await updateDoc(userDocRef, { [`schedules.${dateStr}`]: arrayUnion(schedule) });
     };
 
     const deleteSchedule = async (dateStr, schedule) => {
+        if (!isLoaded) return;
         setSchedules(prev => ({
             ...prev,
             [dateStr]: prev[dateStr].filter(s => s.id !== schedule.id)
         }));
-        await updateDoc(userDocRef, {
-            [`schedules.${dateStr}`]: arrayRemove(schedule)
-        });
+        await updateDoc(userDocRef, { [`schedules.${dateStr}`]: arrayRemove(schedule) });
     };
 
-    // 🌟 3. 날짜별 메모 저장 (Dot Notation)
     const saveDayMemo = async (dateStr, memo) => {
+        if (!isLoaded) return;
         setDayMemos(prev => ({ ...prev, [dateStr]: memo }));
-        await updateDoc(userDocRef, {
-            [`dayMemos.${dateStr}`]: memo
-        });
+        await updateDoc(userDocRef, { [`dayMemos.${dateStr}`]: memo });
     };
 
-    // 🌟 4. 일정-장소 연결 토글 (전체 배열 업데이트)
     const toggleDatePlace = async (dateStr, placeId, currentList) => {
-        const newList = currentList.includes(placeId)
-            ? currentList.filter(id => id !== placeId)
-            : [...currentList, placeId];
-        
+        if (!isLoaded) return;
+        const newList = currentList.includes(placeId) ? currentList.filter(id => id !== placeId) : [...currentList, placeId];
         setDatePlaces(prev => ({ ...prev, [dateStr]: newList }));
-        await updateDoc(userDocRef, {
-            [`datePlaces.${dateStr}`]: newList
-        });
+        await updateDoc(userDocRef, { [`datePlaces.${dateStr}`]: newList });
     };
 
-    // 🌟 5. 지도 정보 업데이트
     const updateMapInfo = async (newMapState) => {
+        if (!isLoaded) return;
         setMapInfo(newMapState);
         await updateDoc(userDocRef, { mapState: newMapState });
+    };
+
+    const updateLayout = async (key, ratio, isFinal = false) => {
+        if (!isLoaded) return;
+        const setters = {
+            splitRatio: setSplitRatio,
+            placeTopRatio: setPlaceTopRatio,
+            placeVerticalRatio: setPlaceVerticalRatio,
+            memoVerticalRatio: setMemoVerticalRatio,
+            memoScheduleRatio: setMemoScheduleRatio,
+            placeSearchRatio: setPlaceSearchRatio,
+            memoDateRatio: setMemoDateRatio
+        };
+        if (setters[key]) setters[key](ratio);
+        if (isFinal) await updateDoc(userDocRef, { [key]: ratio });
     };
 
     return {
@@ -123,6 +139,16 @@ export function useScheduleData(showToast) {
         saveDayMemo,
         datePlaces,
         toggleDatePlace,
+        layout: {
+            splitRatio,
+            placeTopRatio,
+            placeVerticalRatio,
+            memoVerticalRatio,
+            memoScheduleRatio,
+            placeSearchRatio,
+            memoDateRatio
+        },
+        updateLayout,
         mapInfo,
         updateMapInfo
     };
