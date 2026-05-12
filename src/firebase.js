@@ -2,13 +2,13 @@
 import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
 
 const firebaseConfig = {
-    apiKey: "AIzaSyCF7W6W8LbpsISWEErNtU1VahTdrv5X4nM",
-    authDomain: "schedulemanager-1fe50.firebaseapp.com",
-    projectId: "schedulemanager-1fe50",
-    storageBucket: "schedulemanager-1fe50.firebasestorage.app",
-    messagingSenderId: "149071390344",
-    appId: "1:149071390344:web:6b406c44e4d0a29f46613d",
-    measurementId: "G-9NB3HRZMBN"
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
+    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 const app = initializeApp(firebaseConfig);

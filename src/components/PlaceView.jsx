@@ -1,7 +1,10 @@
-﻿import { useState, useEffect, useRef } from 'react';
-import { Map, MapMarker } from 'react-kakao-maps-sdk';
+import React, { useState, useEffect, useRef } from 'react';
+import PlaceSearchBar from './place/PlaceSearchBar';
+import PlaceMap from './place/PlaceMap';
+import PlaceDetailPanel from './place/PlaceDetailPanel';
+import SavedPlaceList from './place/SavedPlaceList';
 
-function PlaceView({ appData, updateAppData, showToast }) {
+function PlaceView({ savedPlaces, addSavedPlace, deleteSavedPlace, updateSavedPlacesList, mapInfo, updateMapInfo, showToast }) {
     const [keyword, setKeyword] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isOverlayOpen, setIsOverlayOpen] = useState(false);
@@ -9,78 +12,48 @@ function PlaceView({ appData, updateAppData, showToast }) {
     const [memoInput, setMemoInput] = useState('');
     const [myLocation, setMyLocation] = useState(null);
 
-    // 🌟 중복 실행 방지를 위한 Ref
-    const isProcessing = useRef(false);
+    const isLocating = useRef(false);
 
+    // 🌟 선택된 장소가 바뀔 때 메모 동기화
     useEffect(() => {
-        // 이미 초기화가 완료되었거나 현재 처리 중이면 중단
-        if (appData.mapState.isInitialized || isProcessing.current) return;
-        isProcessing.current = true;
+        if (selectedPlace) {
+            setMemoInput(selectedPlace.memo || '');
+        } else {
+            setMemoInput('');
+        }
+    }, [selectedPlace]);
 
-        const finalize = (centerPos) => {
-            updateAppData({
-                ...appData,
-                mapState: {
-                    center: centerPos || appData.mapState.center,
-                    level: appData.mapState.level,
-                    isInitialized: true
-                }
-            });
-        };
+    // 🌟 현재 위치 비동기 로딩
+    useEffect(() => {
+        if (mapInfo.center.lat !== 37.5665 || isLocating.current) return;
+        isLocating.current = true;
 
-        // 🌟 1. 즉시 타임아웃 설정 (사용자가 이미 허용했더라도 응답이 늦을 경우 대비)
         const timer = setTimeout(() => {
-            if (!appData.mapState.isInitialized) {
-                finalize(); // 현재 값(서울시청)으로 강제 시작
-                showToast('위치 응답이 늦어 기본 위치로 시작합니다.');
-            }
-        }, 5000); // 5초 대기
+            showToast('위치 응답이 늦어 기본 위치로 시작합니다.');
+        }, 5000);
 
-        // 🌟 2. 위치 정보 요청
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(
-                (position) => {
+                (pos) => {
                     clearTimeout(timer);
-                    const newPos = {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude,
-                    };
+                    const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
                     setMyLocation(newPos);
-                    finalize(newPos);
+                    updateMapInfo({ ...mapInfo, center: newPos });
                 },
-                (error) => {
-                    clearTimeout(timer);
-                    finalize(); // 에러 발생 시 기본값으로 시작
-                    showToast('위치 정보를 가져올 수 없어 기본 위치로 시작합니다.');
-                },
-                { enableHighAccuracy: true, timeout: 4500, maximumAge: 0 }
+                () => clearTimeout(timer),
+                { timeout: 4500 }
             );
-        } else {
-            clearTimeout(timer);
-            finalize();
         }
+    }, [mapInfo, updateMapInfo, showToast]);
 
-        return () => clearTimeout(timer);
-    }, []);
-
-    // 지도를 움직일 때마다 위치 저장 (탭 전환 대비)
     const handleMapDragEnd = (map) => {
-        const newCenter = {
-            lat: map.getCenter().getLat(),
-            lng: map.getCenter().getLng(),
-        };
-        // 불필요한 리렌더링 방지를 위해 위치가 유의미하게 변했을 때만 업데이트 추천
-        updateAppData({
-            ...appData,
-            mapState: {
-                ...appData.mapState,
-                center: newCenter,
-                level: map.getLevel(),
-            }
+        updateMapInfo({
+            ...mapInfo,
+            center: { lat: map.getCenter().getLat(), lng: map.getCenter().getLng() },
+            level: map.getLevel(),
         });
     };
 
-    // 장소 검색 및 선택 로직은 기존과 동일 (생략 없이 통합 유지)
     const searchPlace = () => {
         if (!keyword.trim()) return;
         const ps = new window.kakao.maps.services.Places();
@@ -88,10 +61,8 @@ function PlaceView({ appData, updateAppData, showToast }) {
             if (status === window.kakao.maps.services.Status.OK) {
                 setSearchResults(data);
                 setIsOverlayOpen(true);
-                if (data.length > 0) {
-                    const newCenter = { lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) };
-                    updateAppData({ ...appData, mapState: { ...appData.mapState, center: newCenter } });
-                }
+                const newCenter = { lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) };
+                updateMapInfo({ ...mapInfo, center: newCenter });
             } else {
                 setIsOverlayOpen(false);
                 showToast('검색 결과가 없습니다.');
@@ -103,134 +74,104 @@ function PlaceView({ appData, updateAppData, showToast }) {
         const lat = parseFloat(place.y || place.lat);
         const lng = parseFloat(place.x || place.lng);
         const addr = place.road_address_name || place.address_name;
-        const savedVersion = appData.savedPlaces.find(p => p.place_name === place.place_name && p.address_name === addr);
-        updateAppData({ ...appData, mapState: { ...appData.mapState, center: { lat, lng } } });
+        const saved = savedPlaces.find(p => p.place_name === place.place_name && p.address_name === addr);
+
+        updateMapInfo({ ...mapInfo, center: { lat, lng } });
         setIsOverlayOpen(false);
         setKeyword(place.place_name);
-        if (savedVersion) { setSelectedPlace(savedVersion); setMemoInput(savedVersion.memo || ''); }
-        else { setSelectedPlace({ ...place, lat, lng, address_name: addr }); setMemoInput(''); }
+
+        if (saved) {
+            setSelectedPlace(saved);
+        } else {
+            setSelectedPlace({ ...place, lat, lng, address_name: addr });
+        }
     };
 
     const handleMemoChange = (e) => {
         const newMemo = e.target.value;
         setMemoInput(newMemo);
-        if (selectedPlace && typeof selectedPlace.id === 'number') {
-            const newPlaces = appData.savedPlaces.map(p => p.id === selectedPlace.id ? { ...p, memo: newMemo } : p);
-            updateAppData({ ...appData, savedPlaces: newPlaces });
+        if (selectedPlace?.id) {
+            const newPlaces = savedPlaces.map(p =>
+                p.id === selectedPlace.id ? { ...p, memo: newMemo } : p
+            );
+            // 메모 수정은 배열 내 요소 변경이므로 덮어쓰기 로직 사용
+            updateSavedPlacesList(newPlaces);
         }
     };
 
     const saveCurrentPlace = () => {
-        if (!selectedPlace) return;
-        const entry = { id: Date.now(), place_name: selectedPlace.place_name, address_name: selectedPlace.address_name, category_name: selectedPlace.category_name, phone: selectedPlace.phone, lat: selectedPlace.lat, lng: selectedPlace.lng, memo: memoInput.trim(), savedAt: new Date().toLocaleDateString('ko-KR') };
-        updateAppData({ ...appData, savedPlaces: [entry, ...appData.savedPlaces] });
+        if (!selectedPlace || isSaved) return;
+        const entry = {
+            id: Date.now(),
+            place_name: selectedPlace.place_name,
+            address_name: selectedPlace.address_name,
+            category_name: selectedPlace.category_name,
+            phone: selectedPlace.phone,
+            lat: selectedPlace.lat,
+            lng: selectedPlace.lng,
+            memo: memoInput.trim(),
+            savedAt: new Date().toLocaleDateString('ko-KR')
+        };
+        // 정밀 추가 사용
+        addSavedPlace(entry);
         setSelectedPlace(entry);
         showToast('저장 완료!');
     };
 
-    const deleteSavedPlace = (id, e) => {
+    const handleDeletePlace = (id, e) => {
         e.stopPropagation();
-        const newPlaces = appData.savedPlaces.filter(p => p.id !== id);
-        updateAppData({ ...appData, savedPlaces: newPlaces });
-        if (selectedPlace?.id === id) { setSelectedPlace(null); setMemoInput(''); }
-        showToast('삭제했습니다.');
+        const target = savedPlaces.find(p => p.id === id);
+        if (target) {
+            // 정밀 삭제 사용 (Props로 전달받은 함수 호출)
+            deleteSavedPlace(target);
+            if (selectedPlace?.id === id) setSelectedPlace(null);
+            showToast('삭제했습니다.');
+        }
     };
 
-    const isSaved = selectedPlace && appData.savedPlaces.some(p => p.place_name === selectedPlace.place_name && p.address_name === selectedPlace.address_name);
-    const cat = selectedPlace?.category_name ? selectedPlace.category_name.split('>').pop().trim() : '';
-
-    // 🌟 아직 초기화 중이라면 지도를 그리지 않고 대기
-    if (!appData.mapState.isInitialized) {
-        return (
-            <div style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', background: 'var(--paper)' }}>
-                <p>위치 정보를 확인하고 있습니다...</p>
-            </div>
-        );
-    }
+    const isSaved = selectedPlace && savedPlaces.some(
+        p => p.place_name === selectedPlace.place_name && p.address_name === selectedPlace.address_name
+    );
 
     return (
         <>
             <div className="image-zone">
                 <div id="map-container">
-                    <div className="map-search-bar">
-                        <input type="text" value={keyword} onChange={(e) => setKeyword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && searchPlace()} placeholder="장소를 검색하세요..." />
-                        <button onClick={searchPlace}>검색</button>
-                    </div>
-                    <Map center={appData.mapState.center} level={appData.mapState.level} style={{ width: "100%", height: "calc(100% - 52px)" }} onCenterChanged={handleMapDragEnd} onZoomChanged={handleMapDragEnd}>
-                        {myLocation && <MapMarker position={myLocation} image={{ src: "https://t1.daumcdn.net/localimg/localimages/07/2018/pc/img/marker_my.png", size: { width: 30, height: 30 } }} />}
-                        {searchResults.map((place, idx) => (
-                            <MapMarker key={`search-${place.id || idx}`} position={{ lat: parseFloat(place.y), lng: parseFloat(place.x) }} onClick={() => handleSelectPlace(place)} image={{ src: selectedPlace?.place_name === place.place_name ? "https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png" : "https://t1.daumcdn.net/mapjsapi/images/2.0/marker.png", size: { width: 24, height: 35 } }} />
-                        ))}
-                        {appData.savedPlaces.map((place) => (
-                            <MapMarker key={`saved-${place.id}`} position={{ lat: place.lat, lng: place.lng }} onClick={() => handleSelectPlace(place)} image={{ src: "https://t1.daumcdn.net/localimg/localimages/07/2011/marker_red.png", size: { width: 24, height: 35 } }} />
-                        ))}
-                    </Map>
-                    {isOverlayOpen && (
-                        <div className="search-results-overlay" style={{ display: 'block' }}>
-                            {searchResults.map((place, idx) => (
-                                <div key={idx} className="search-result-item" onClick={() => handleSelectPlace(place)}>
-                                    <div className="sr-name">{place.place_name}</div>
-                                    <div className="sr-addr">{place.road_address_name || place.address_name}</div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
+                    <PlaceSearchBar 
+                        keyword={keyword}
+                        setKeyword={setKeyword}
+                        onSearch={searchPlace}
+                        searchResults={searchResults}
+                        isOverlayOpen={isOverlayOpen}
+                        onSelectPlace={handleSelectPlace}
+                    />
+                    <PlaceMap 
+                        mapInfo={mapInfo}
+                        onMapDragEnd={handleMapDragEnd}
+                        myLocation={myLocation}
+                        searchResults={searchResults}
+                        savedPlaces={savedPlaces}
+                        selectedPlace={selectedPlace}
+                        onSelectPlace={handleSelectPlace}
+                    />
                 </div>
             </div>
-            {/* ... 이하 우측 정보 패널 레이아웃 동일 (생략하지 않고 적용하세요) ... */}
+
             <div className="text-container">
                 <div className="place-panel">
-                    <div className="place-top">
-                        <div className="place-info-col">
-                            <div className="place-info-label">장소 정보</div>
-                            <div id="place-info-content">
-                                {!selectedPlace ? (
-                                    <div className="place-info-empty" style={{ height: '110px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                        지도에서 장소를 검색하거나<br/>마커를 클릭하세요.
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="place-info-name">{selectedPlace.place_name || '\u00A0'}</div>
-                                        <div className="place-info-category-wrap">
-                                            {cat && <div className="place-info-category">{cat}</div>}
-                                        </div>
-                                        <div className="place-info-addr">{selectedPlace.address_name || '\u00A0'}</div>
-                                        <div className="place-info-phone">{selectedPlace.phone ? `📞 ${selectedPlace.phone}` : '\u00A0'}</div>
-                                    </>
-                                )}
-                            </div>
-                            <button className="save-place-btn" onClick={saveCurrentPlace} disabled={!selectedPlace || isSaved}>
-                                {isSaved ? '이미 저장됨' : '저장하기'}
-                            </button>
-                        </div>
-                        <div className="memo-col">
-                            <div className="place-info-label">메모</div>
-                            <textarea value={memoInput} onChange={handleMemoChange} placeholder={selectedPlace ? (isSaved ? "수정 시 자동 저장됩니다." : "메모를 입력하고 저장 버튼을 누르세요.") : "장소를 선택해주세요."} disabled={!selectedPlace}></textarea>
-                        </div>
-                    </div>
-                    <div className="saved-places-zone">
-                        <div className="saved-places-header">
-                            <div className="saved-places-title">저장된 장소</div>
-                            <div className="saved-count">{appData.savedPlaces.length}곳</div>
-                        </div>
-                        <div id="saved-places-list">
-                            {appData.savedPlaces.length === 0 ? (
-                                <div className="empty-list">아직 저장된 장소가 없습니다. ✦</div>
-                            ) : (
-                                appData.savedPlaces.map((place, idx) => (
-                                    <div key={place.id} className={`saved-place-item ${selectedPlace?.id === place.id ? 'active' : ''}`} onClick={() => handleSelectPlace(place)}>
-                                        <div className="saved-place-idx">{String(idx + 1).padStart(2, '0')}</div>
-                                        <div className="saved-place-texts">
-                                            <div className="saved-place-name">{place.place_name}</div>
-                                            <div className="saved-place-addr">{place.address_name}</div>
-                                            {place.memo && <div className="saved-place-memo">✐ {place.memo}</div>}
-                                        </div>
-                                        <button className="delete-btn" onClick={(e) => deleteSavedPlace(place.id, e)}>✕</button>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-                    </div>
+                    <PlaceDetailPanel 
+                        selectedPlace={selectedPlace}
+                        memoInput={memoInput}
+                        onMemoChange={handleMemoChange}
+                        onSave={saveCurrentPlace}
+                        isSaved={isSaved}
+                    />
+                    <SavedPlaceList 
+                        savedPlaces={savedPlaces}
+                        selectedPlace={selectedPlace}
+                        onSelectPlace={handleSelectPlace}
+                        onDelete={handleDeletePlace}
+                    />
                 </div>
             </div>
         </>
